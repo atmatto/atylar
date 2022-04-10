@@ -587,3 +587,39 @@ func TestCleanDirectoryStructure(t *testing.T) {
 		t.Fatal("This directory shouldn't exist")
 	}
 }
+
+func TestFixPath(t *testing.T) {
+	tests := []struct {
+		path string
+	}{
+		{"simple/path"},
+		{"/simple/path"},
+		{"/file/with/extension.txt"},
+		{"/doubled//slash"},
+		{"a/hidden/.file"},
+		{"a/.hidden/directory"},
+		{"file/with/version@123"},
+		{"directory/with/version@123/number"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			err := checkPath(tt.path)
+			if err == nil {
+				p := fixPath(tt.path)
+				err = checkPath(p)
+				if err != nil {
+					t.Error("Path was broken (" + tt.path + " -> " + p + ")")
+				}
+				if p != filepath.Clean(tt.path) {
+					t.Error("Path was significantly changed (" + filepath.Clean(tt.path) + " -> " + p + ")")
+				}
+			} else {
+				p := fixPath(tt.path)
+				err = checkPath(p)
+				if err != nil {
+					t.Error("Path wasn't fixed (" + tt.path + " -> " + p + ")")
+				}
+			}
+		})
+	}
+}

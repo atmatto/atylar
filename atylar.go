@@ -114,6 +114,41 @@ func cleanDirectoryStructure(path string) error {
 	return nil
 }
 
+// fixIllegalFilenames renames all files whose names are illegal.
+// It skips `path/.history`.
+func fixIllegalFilenames(path string) error {
+	var fixChildrenOf func(path string) error
+	fixChildrenOf = func(currentPath string) error {
+		if s, err := os.Stat(currentPath); err != nil || !s.IsDir() {
+			return err
+		}
+		f, err := os.Open(currentPath)
+		if err != nil {
+			return err
+		}
+		entries, err := f.ReadDir(0)
+		f.Close()
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if path == currentPath && entry.Name() == ".history" {
+				continue
+			}
+			if entry.IsDir() {
+				if err := fixChildrenOf(filepath.Join(currentPath, entry.Name())); err != nil {
+					return err
+				}
+			}
+			if checkPath(entry.Name()) != nil {
+				os.Rename(filepath.Join(currentPath, entry.Name()), filepath.Join(currentPath, fixPath(entry.Name())))
+			}
+		}
+		return nil
+	}
+	return fixChildrenOf(path)
+}
+
 // New opens or creates a new store.
 func New(root string) (Store, error) {
 	err := os.MkdirAll(root, 0755)
@@ -121,6 +156,10 @@ func New(root string) (Store, error) {
 		return Store{}, err
 	}
 	err = cleanDirectoryStructure(root)
+	if err != nil {
+		return Store{}, err
+	}
+	err = fixIllegalFilenames(root)
 	if err != nil {
 		return Store{}, err
 	}
@@ -172,6 +211,19 @@ func checkPath(path string) error {
 	} else {
 		return nil
 	}
+}
+
+func fixPath(path string) string {
+	out := ""
+	if strings.HasPrefix(path, "/") {
+		out = "/"
+	}
+	path = filepath.Clean(path)
+	pathElements := strings.Split(path, string(filepath.Separator))
+	for _, element := range pathElements {
+		out = filepath.Join(out, strings.Replace(strings.TrimPrefix(element, "."), "@", "_", -1))
+	}
+	return out
 }
 
 // GetGeneration increments current generation if the argument is true and returns it.

@@ -22,7 +22,7 @@ type Store struct {
 // getGenerationFromFileName reads the path and returns value of the number after the last `@` sign
 // in the last element of the path. If there is no generation specified or there is a parsing error,
 // 0 is returned.
-func getGenerationFromFileName(path string) uint64 {
+func getGenerationFromFileName(path string) (generation uint64) {
 	if path == "" {
 		return 0
 	}
@@ -32,11 +32,11 @@ func getGenerationFromFileName(path string) uint64 {
 		case '/', '\\':
 			return 0
 		case '@':
-			generation, _ := strconv.ParseUint(path[i+1:], 10, 64)
-			return generation
+			generation, _ = strconv.ParseUint(path[i+1:], 10, 64)
+			return
 		}
 	}
-	return 0
+	return
 }
 
 // cleanDirectory removes an empty directory and recursively its empty parents.
@@ -150,31 +150,27 @@ func fixIllegalFilenames(path string) error {
 }
 
 // New opens or creates a new store.
-func New(root string) (Store, error) {
-	err := os.MkdirAll(root, 0755)
-	if err != nil {
-		return Store{}, err
+func New(root string) (S Store, err error) {
+	S = Store{Root: root, Generation: 1}
+	if err = os.MkdirAll(root, 0755); err != nil {
+		return
 	}
-	err = cleanDirectoryStructure(root)
-	if err != nil {
-		return Store{}, err
+	if err = cleanDirectoryStructure(root); err != nil {
+		return
 	}
-	err = fixIllegalFilenames(root)
-	if err != nil {
-		return Store{}, err
+	if err = fixIllegalFilenames(root); err != nil {
+		return
 	}
-	err = os.MkdirAll(root+"/.history", 0755)
-	if err != nil {
-		return Store{}, err
+	if err = os.MkdirAll(root+"/.history", 0755); err != nil {
+		return
 	}
-	var generation uint64 = 1
 	filepath.WalkDir(root+"/.history", fs.WalkDirFunc(func(path string, _ fs.DirEntry, _ error) error {
-		if g := getGenerationFromFileName(path); g > generation {
-			generation = g
+		if g := getGenerationFromFileName(path); g > S.Generation {
+			S.Generation = g
 		}
 		return nil
 	}))
-	return Store{Root: root, Generation: generation}, nil
+	return
 }
 
 func (S *Store) realPath(path string, history bool) string {
@@ -195,8 +191,7 @@ var ErrIllegalPath = errors.New("atylar: illegal path")
 // need to be included in other functions, as these frequently use
 // captureHistory.
 func checkPath(path string) error {
-	path = filepath.Clean(path)
-	pathElements := strings.Split(path, string(filepath.Separator))
+	pathElements := strings.Split(filepath.Clean(path), string(filepath.Separator))
 	empty := true
 	for _, element := range pathElements {
 		if strings.Contains(element, "@") || strings.HasPrefix(element, ".") {
@@ -213,17 +208,15 @@ func checkPath(path string) error {
 	}
 }
 
-func fixPath(path string) string {
-	out := ""
+func fixPath(path string) (fixed string) {
 	if strings.HasPrefix(path, "/") {
-		out = "/"
+		fixed = "/"
 	}
-	path = filepath.Clean(path)
-	pathElements := strings.Split(path, string(filepath.Separator))
+	pathElements := strings.Split(filepath.Clean(path), string(filepath.Separator))
 	for _, element := range pathElements {
-		out = filepath.Join(out, strings.Replace(strings.TrimPrefix(element, "."), "@", "_", -1))
+		fixed = filepath.Join(fixed, strings.Replace(strings.TrimPrefix(element, "."), "@", "_", -1))
 	}
-	return out
+	return
 }
 
 // GetGeneration increments current generation if the argument is true and returns it.
@@ -236,22 +229,21 @@ func (S *Store) GetGeneration(increment bool) uint64 {
 }
 
 // FileHistory returns generations available for the given path.
-func (S *Store) FileHistory(path string) ([]uint64, error) {
-	out := []uint64{}
+func (S *Store) FileHistory(path string) (history []uint64, err error) {
 	dir, err := os.ReadDir(filepath.Dir(S.realPath(path, true)))
 	if err != nil {
-		return nil, err
+		return
 	}
 	for _, entry := range dir {
 		if n := entry.Name(); strings.HasPrefix(n, filepath.Base(path)+"@") {
 			if g := getGenerationFromFileName(n); g != 0 {
-				out = append(out, g)
+				history = append(history, g)
 			}
 		}
 	}
 	// Sort found generations starting from the newest.
-	sort.Slice(out, func(i, j int) bool { return out[i] > out[j] })
-	return out, nil
+	sort.Slice(history, func(i, j int) bool { return history[i] > history[j] })
+	return
 }
 
 // compareFiles return true if both files are equal.
@@ -309,8 +301,7 @@ func copy(from, to string, overwrite bool) error {
 		return err
 	}
 	defer f1.Close()
-	err = os.MkdirAll(filepath.Dir(to), 0755)
-	if err != nil {
+	if err = os.MkdirAll(filepath.Dir(to), 0755); err != nil {
 		return err
 	}
 	flags := 0
@@ -324,8 +315,7 @@ func copy(from, to string, overwrite bool) error {
 		return err
 	}
 	defer f2.Close()
-	_, err = io.Copy(f2, f1)
-	if err != nil {
+	if _, err = io.Copy(f2, f1); err != nil {
 		return err
 	}
 	return nil
@@ -347,28 +337,26 @@ func (S *Store) captureHistory(path string) error {
 	}
 	if len(history) != 0 {
 		latestPath := S.realPath(path, true) + "@" + strconv.FormatUint(history[0], 10)
-		eq, err := compareFiles(currentPath, latestPath)
-		if err != nil {
+		if eq, err := compareFiles(currentPath, latestPath); err != nil {
 			return err
-		}
-		if eq {
+		} else if eq {
 			return nil // This version is already saved
 		}
 	}
 	// Capturing
-	capturePath := S.realPath(path, true) + "@" + strconv.FormatUint(S.GetGeneration(true), 10)
-	copy(currentPath, capturePath, false)
+	copy(currentPath, S.realPath(path, true)+"@"+strconv.FormatUint(S.GetGeneration(true), 10), false)
 	return nil
 }
 
 // Write returns a file descriptor for writing.
 // If the file exists, it is truncated.
 func (S *Store) Write(path string) (*os.File, error) {
-	err := S.captureHistory(path)
-	if err != nil {
+	if err := S.captureHistory(path); err != nil {
 		return nil, err
 	}
-	os.MkdirAll(filepath.Dir(S.realPath(path, false)), 0755)
+	if err := os.MkdirAll(filepath.Dir(S.realPath(path, false)), 0755); err != nil {
+		return nil, err
+	}
 	return os.OpenFile(S.realPath(path, false), os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
 }
 
@@ -383,8 +371,7 @@ func (S *Store) Open(path string, generation uint64) (*os.File, error) {
 
 // Copy copies a file.
 func (S *Store) Copy(from, to string) error {
-	err := S.captureHistory(to)
-	if err != nil {
+	if err := S.captureHistory(to); err != nil {
 		return err
 	}
 	return copy(S.realPath(from, false), S.realPath(to, false), true)
@@ -392,16 +379,13 @@ func (S *Store) Copy(from, to string) error {
 
 // Move moves a file.
 func (S *Store) Move(from, to string) error {
-	err := S.captureHistory(to)
-	if err != nil {
+	if err := S.captureHistory(to); err != nil {
 		return err
 	}
-	err = S.captureHistory(from)
-	if err != nil {
+	if err := S.captureHistory(from); err != nil {
 		return err
 	}
-	err = os.Rename(S.realPath(from, false), S.realPath(to, false))
-	if err != nil {
+	if err := os.Rename(S.realPath(from, false), S.realPath(to, false)); err != nil {
 		return err
 	}
 	return cleanDirectory(filepath.Dir(S.realPath(to, false)))
@@ -409,12 +393,10 @@ func (S *Store) Move(from, to string) error {
 
 // Remove removes a file.
 func (S *Store) Remove(path string) error {
-	err := S.captureHistory(path)
-	if err != nil {
+	if err := S.captureHistory(path); err != nil {
 		return err
 	}
-	err = os.Remove(S.realPath(path, false))
-	if err != nil {
+	if err := os.Remove(S.realPath(path, false)); err != nil {
 		return err
 	}
 	return cleanDirectory(filepath.Dir(S.realPath(path, false)))
@@ -422,11 +404,10 @@ func (S *Store) Remove(path string) error {
 
 // List lists files (and not directories) in the specified directory.
 // List returns paths relative to root, not to the path specified as the argument.
-func (S *Store) List(path string, history bool, recursive bool) ([]string, error) {
-	out := []string{}
+func (S *Store) List(path string, history bool, recursive bool) (listing []string, err error) {
 	entries, err := os.ReadDir(S.realPath(path, history))
 	if err != nil {
-		return nil, err
+		return
 	}
 	for _, entry := range entries {
 		if entry.Name() == ".history" {
@@ -434,15 +415,16 @@ func (S *Store) List(path string, history bool, recursive bool) ([]string, error
 		}
 		entryPath := filepath.Join(path, entry.Name())
 		if !entry.IsDir() {
-			out = append(out, entryPath)
+			listing = append(listing, entryPath)
 		}
 		if recursive && entry.IsDir() {
-			children, err := S.List(entryPath, history, true)
+			var children []string
+			children, err = S.List(entryPath, history, true)
 			if err != nil {
-				return out, err
+				return
 			}
-			out = append(out, children...)
+			listing = append(listing, children...)
 		}
 	}
-	return out, nil
+	return
 }

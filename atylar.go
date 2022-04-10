@@ -39,9 +39,92 @@ func getGenerationFromFileName(path string) uint64 {
 	return 0
 }
 
+// cleanDirectory removes an empty directory and recursively its empty parents.
+func cleanDirectory(path string) error {
+	if s, err := os.Stat(path); err != nil || !s.IsDir() {
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	_, err = f.Readdirnames(1)
+	f.Close()
+	if err == io.EOF { // Directory is empty
+		os.Remove(path)
+		return cleanDirectory(filepath.Dir(path))
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
+// cleanDirectoryStructure removes all empty directories in
+// the tree rooted at path. The root folder is not deleted.
+func cleanDirectoryStructure(path string) error {
+	unneeded := make(map[string]bool)
+	var mark func(path string) error
+	mark = func(path string) error {
+		if s, err := os.Stat(path); err != nil || !s.IsDir() {
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		entries, err := f.ReadDir(0)
+		f.Close()
+		if err != nil {
+			return err
+		}
+		empty := true
+		for _, entry := range entries {
+			if entry.IsDir() {
+				err := mark(filepath.Join(path, entry.Name()))
+				if err != nil {
+					return err
+				}
+				if !unneeded[filepath.Join(path, entry.Name())] {
+					empty = false
+				}
+			} else {
+				empty = false
+			}
+		}
+		if empty {
+			unneeded[path] = true
+		}
+		return nil
+	}
+	err := mark(path)
+	if err != nil {
+		return err
+	}
+	delete(unneeded, path)
+	toBeDeleted := []string{}
+	for f := range unneeded {
+		toBeDeleted = append(toBeDeleted, f)
+	}
+	sort.Slice(toBeDeleted, func(i, j int) bool {
+		return strings.Count(toBeDeleted[i], string(filepath.Separator)) > strings.Count(toBeDeleted[j], string(filepath.Separator))
+	})
+	for _, f := range toBeDeleted {
+		os.Remove(f)
+	}
+	return nil
+}
+
 // New opens or creates a new store.
 func New(root string) (Store, error) {
-	err := os.MkdirAll(root+"/.history", 0755)
+	err := os.MkdirAll(root, 0755)
+	if err != nil {
+		return Store{}, err
+	}
+	err = cleanDirectoryStructure(root)
+	if err != nil {
+		return Store{}, err
+	}
+	err = os.MkdirAll(root+"/.history", 0755)
 	if err != nil {
 		return Store{}, err
 	}
@@ -52,7 +135,6 @@ func New(root string) (Store, error) {
 		}
 		return nil
 	}))
-	// TODO
 	return Store{Root: root, Generation: generation}, nil
 }
 
@@ -234,6 +316,7 @@ func (S *Store) Write(path string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	os.MkdirAll(filepath.Dir(S.realPath(path, false)), 0755)
 	return os.OpenFile(S.realPath(path, false), os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
 }
 
@@ -265,7 +348,11 @@ func (S *Store) Move(from, to string) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(S.realPath(from, false), S.realPath(to, false))
+	err = os.Rename(S.realPath(from, false), S.realPath(to, false))
+	if err != nil {
+		return err
+	}
+	return cleanDirectory(filepath.Dir(S.realPath(to, false)))
 }
 
 // Remove removes a file.
@@ -274,7 +361,11 @@ func (S *Store) Remove(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.Remove(S.realPath(path, false))
+	err = os.Remove(S.realPath(path, false))
+	if err != nil {
+		return err
+	}
+	return cleanDirectory(filepath.Dir(S.realPath(path, false)))
 }
 
 // List lists files (and not directories) in the specified directory.

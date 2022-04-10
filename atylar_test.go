@@ -1,6 +1,7 @@
 package atylar
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -95,6 +96,16 @@ func TestStore(t *testing.T) {
 			t.Error("Expected generation to be equal 123, but got", s.Generation)
 		}
 	})
+	t.Run("Clean structure", func(t *testing.T) {
+		s, err := New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+			return
+		}
+		if _, err := os.Stat(s.realPath("empty", false)); err == nil {
+			t.Fatal("This directory shouldn't exist")
+		}
+	})
 }
 
 // prepareComplexTest prepares a mock store directory for further tests.
@@ -110,6 +121,10 @@ func prepareComplexTest(t *testing.T) string {
 		t.Fatal(err)
 	}
 	err = os.MkdirAll(filepath.Join(d, "dir", "dir2"), 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.MkdirAll(filepath.Join(d, "empty", "directory"), 0755)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,5 +534,56 @@ func TestRemove(t *testing.T) {
 	if len(v) != 2 || v[0] != 124 || v[1] != 123 {
 		t.Log(s.List("dir/", true, true))
 		t.Error("Got", v, "when checking history, but expected [124 123]")
+	}
+}
+
+func TestCleanDirectory(t *testing.T) {
+	d := t.TempDir()
+	if err := os.WriteFile(filepath.Join(d, "stop"), []byte{}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(d, "a/very/long/path/to/a/directory"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cleanDirectory(filepath.Join(d, "a/very/long/path/to/a/directory")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(d, "stop")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			t.Fatal("This file should exist")
+		}
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(d, "a")); err == nil {
+		t.Fatal("This directory shouldn't exist")
+	}
+}
+
+func TestCleanDirectoryStructure(t *testing.T) {
+	d := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(d, "a/very/long/path/to/a/directory"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(d, "a/very/long/path/to/another/directory"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(d, "a/very/short/path"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cleanDirectoryStructure(d); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(d); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			t.Fatal("This directory should exist")
+		}
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(d, "a")); err == nil {
+		t.Fatal("This directory shouldn't exist")
 	}
 }

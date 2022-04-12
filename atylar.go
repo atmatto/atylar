@@ -428,3 +428,12 @@ func (S *Store) List(path string, history bool, recursive bool) (listing []strin
 	}
 	return
 }
+
+// IsDirectory checks whether the file pointed to by the path is a directory.
+func (S *Store) IsDirectory(path string, history bool) (bool, error) {
+	fi, err := os.Stat(S.realPath(path, history))
+	if err != nil {
+		return false, err
+	}
+	return fi.IsDir(), nil
+}

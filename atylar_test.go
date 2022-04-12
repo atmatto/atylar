@@ -629,6 +629,9 @@ func TestStat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.Stat("", false); !errors.Is(err, ErrIllegalPath) {
+		t.Error("Supplied illegal path but got no error.")
+	}
 	if fi, err := s.Stat("dir", false); err != nil {
 		t.Error(err)
 	} else if !fi.IsDir() {

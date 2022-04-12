@@ -431,6 +431,9 @@ func (S *Store) List(path string, history bool, recursive bool) (listing []strin
 
 // Stat runs os.Stat on the specified file.
 func (S *Store) Stat(path string, history bool) (fs.FileInfo, error) {
+	if err := checkPath(path); err != nil {
+		return nil, err
+	}
 	fi, err := os.Stat(S.realPath(path, history))
 	if err != nil {
 		return nil, err

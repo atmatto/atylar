@@ -624,19 +624,19 @@ func TestFixPath(t *testing.T) {
 	}
 }
 
-func TestIsDirectory(t *testing.T) {
+func TestStat(t *testing.T) {
 	s, err := New(prepareComplexTest(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dir, err := s.IsDirectory("dir", false); err != nil {
+	if fi, err := s.Stat("dir", false); err != nil {
 		t.Error(err)
-	} else if !dir {
-		t.Error("IsDirectory returned false, but path pointed to a directory.")
+	} else if !fi.IsDir() {
+		t.Error("IsDir returned false, but path pointed to a directory.")
 	}
-	if dir, err := s.IsDirectory("dir/file", false); err != nil {
+	if fi, err := s.Stat("dir/file", false); err != nil {
 		t.Error(err)
-	} else if dir {
-		t.Error("IsDirectory returned true, but path pointed to a file.")
+	} else if fi.IsDir() {
+		t.Error("IsDir returned true, but path pointed to a file.")
 	}
 }

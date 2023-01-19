@@ -1,5 +1,15 @@
-// Atylar is an opinionated storage system with version history.
+// Package atylar is an opinionated file storage system with version history.
+// It uses a flat directory structure (no subdirectories). To start, initialize a new Store using the function New(),
+// supplying the store's root directory path as the argument. All functions which may be used to modify the files
+// automatically copy the current file to the `.history` directory in the current store. Historic versions are marked
+// with an @ sign and the version number after the file name. The numbers are designated based on the generation,
+// an always-increasing counter characteristic for the store.
 package atylar
+
+// TODO:
+// Handle concurrency problems.
+// Garbage collect old file versions.
+// Write tests.
 
 import (
 	"bytes"
@@ -15,208 +25,87 @@ import (
 )
 
 type Store struct {
-	Root       string // Path to store root
-	Generation uint64
+	Directory  string // Path to store root
+	Generation uint64 // Used to set files' versions
 }
 
-// getGenerationFromFileName reads the path and returns value of the number after the last `@` sign
-// in the last element of the path. If there is no generation specified or there is a parsing error,
-// 0 is returned.
-func getGenerationFromFileName(path string) (generation uint64) {
-	if path == "" {
+// normalizeName turns the filename into a normalized file name.
+func normalizeName(filename string) (normalized string) {
+	normalized = strings.Trim(filepath.Clean(filename), "/\\.")
+	normalized = strings.ReplaceAll(normalized, "/", "_")
+	normalized = strings.ReplaceAll(normalized, "\\", "_")
+	normalized = strings.ReplaceAll(normalized, string(filepath.Separator), "_")
+	return strings.ReplaceAll(normalized, "@", "_")
+}
+
+// normalize ensures that all file names are normalized.
+func (S *Store) normalize() error {
+	dir, err := os.ReadDir(filepath.Join(S.Directory, ".history"))
+	if err != nil {
+		return err
+	}
+	for _, entry := range dir {
+		norm := normalizeName(entry.Name())
+		if norm != entry.Name() {
+			if err = os.Rename(filepath.Join(S.Directory, ".history", entry.Name()), filepath.Join(S.Directory, ".history", norm)); err != nil {
+				return err
+			}
+		}
+	}
+
+	dir, err = os.ReadDir(S.Directory)
+	if err != nil {
+		return err
+	}
+	for _, entry := range dir {
+		norm := normalizeName(entry.Name())
+		if norm != entry.Name() && entry.Name() != ".history" {
+			if err = os.Rename(filepath.Join(S.Directory, entry.Name()), filepath.Join(S.Directory, norm)); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// generation reads the file name and returns value of the number after the last `@` sign.
+// If there is no generation specified or there is a parsing error, 0 is returned.
+func generation(filename string) (generation uint64) {
+	if filename == "" {
 		return 0
 	}
-	path = strings.TrimRight(path, "/")
-	for i := len(path) - 2; i >= 0; i-- {
-		switch path[i] {
+	filename = strings.TrimRight(filename, "/")
+	for i := len(filename) - 2; i >= 0; i-- {
+		switch filename[i] {
 		case '/', '\\':
 			return 0
 		case '@':
-			generation, _ = strconv.ParseUint(path[i+1:], 10, 64)
+			generation, _ = strconv.ParseUint(filename[i+1:], 10, 64)
 			return
 		}
 	}
 	return
 }
 
-// cleanDirectory removes an empty directory and recursively its empty parents.
-func cleanDirectory(path string) error {
-	if s, err := os.Stat(path); err != nil || !s.IsDir() {
-		return err
-	}
-	f, err := os.Open(path)
+// baseName strips version info (text after `@`) from the file name.
+func baseName(filename string) string {
+	return strings.Split(filename, "@")[0]
+}
+
+// initGeneration sets the generation to the maximal present
+// in the .history directory.
+func (S *Store) initGeneration() error {
+	dir, err := os.ReadDir(S.Directory + "/.history")
 	if err != nil {
 		return err
 	}
-	_, err = f.Readdirnames(1)
-	f.Close()
-	if err == io.EOF { // Directory is empty
-		os.Remove(path)
-		return cleanDirectory(filepath.Dir(path))
-	} else if err != nil {
-		return err
-	}
-	return nil
-}
-
-// cleanDirectoryStructure removes all empty directories in
-// the tree rooted at path. The root folder is not deleted.
-func cleanDirectoryStructure(path string) error {
-	unneeded := make(map[string]bool)
-	var mark func(path string) error
-	mark = func(path string) error {
-		if s, err := os.Stat(path); err != nil || !s.IsDir() {
-			return err
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		entries, err := f.ReadDir(0)
-		f.Close()
-		if err != nil {
-			return err
-		}
-		empty := true
-		for _, entry := range entries {
-			if entry.IsDir() {
-				err := mark(filepath.Join(path, entry.Name()))
-				if err != nil {
-					return err
-				}
-				if !unneeded[filepath.Join(path, entry.Name())] {
-					empty = false
-				}
-			} else {
-				empty = false
-			}
-		}
-		if empty {
-			unneeded[path] = true
-		}
-		return nil
-	}
-	err := mark(path)
-	if err != nil {
-		return err
-	}
-	delete(unneeded, path)
-	toBeDeleted := []string{}
-	for f := range unneeded {
-		toBeDeleted = append(toBeDeleted, f)
-	}
-	sort.Slice(toBeDeleted, func(i, j int) bool {
-		return strings.Count(toBeDeleted[i], string(filepath.Separator)) > strings.Count(toBeDeleted[j], string(filepath.Separator))
-	})
-	for _, f := range toBeDeleted {
-		os.Remove(f)
-	}
-	return nil
-}
-
-// fixIllegalFilenames renames all files whose names are illegal.
-// It skips `path/.history`.
-func fixIllegalFilenames(path string) error {
-	var fixChildrenOf func(path string) error
-	fixChildrenOf = func(currentPath string) error {
-		if s, err := os.Stat(currentPath); err != nil || !s.IsDir() {
-			return err
-		}
-		f, err := os.Open(currentPath)
-		if err != nil {
-			return err
-		}
-		entries, err := f.ReadDir(0)
-		f.Close()
-		if err != nil {
-			return err
-		}
-		for _, entry := range entries {
-			if path == currentPath && entry.Name() == ".history" {
-				continue
-			}
-			if entry.IsDir() {
-				if err := fixChildrenOf(filepath.Join(currentPath, entry.Name())); err != nil {
-					return err
-				}
-			}
-			if checkPath(entry.Name()) != nil {
-				os.Rename(filepath.Join(currentPath, entry.Name()), filepath.Join(currentPath, fixPath(entry.Name())))
-			}
-		}
-		return nil
-	}
-	return fixChildrenOf(path)
-}
-
-// New opens or creates a new store.
-func New(root string) (S Store, err error) {
-	S = Store{Root: root, Generation: 1}
-	if err = os.MkdirAll(root, 0755); err != nil {
-		return
-	}
-	if err = cleanDirectoryStructure(root); err != nil {
-		return
-	}
-	if err = fixIllegalFilenames(root); err != nil {
-		return
-	}
-	if err = os.MkdirAll(root+"/.history", 0755); err != nil {
-		return
-	}
-	filepath.WalkDir(root+"/.history", fs.WalkDirFunc(func(path string, _ fs.DirEntry, _ error) error {
-		if g := getGenerationFromFileName(path); g > S.Generation {
+	for _, entry := range dir {
+		if g := generation(entry.Name()); g > S.Generation {
 			S.Generation = g
 		}
-		return nil
-	}))
-	return
-}
-
-func (S *Store) realPath(path string, history bool) string {
-	if history {
-		return filepath.Join(S.Root, ".history", filepath.Clean("/"+path))
-	} else {
-		return filepath.Join(S.Root, filepath.Clean("/"+path))
 	}
-}
-
-var ErrIllegalPath = errors.New("atylar: illegal path")
-
-// checkPath ensures that the given path is allowed to be used. If it
-// isn't, checkPath returns ErrIllegalPath. It should be used only for
-// user-defined paths, and not for auto-generated ones like history paths.
-// Empty path is also illegal.
-// This function is used in Store.captureHistory and so it usually doesn't
-// need to be included in other functions, as these frequently use
-// captureHistory.
-func checkPath(path string) error {
-	pathElements := strings.Split(filepath.Clean(path), string(filepath.Separator))
-	empty := true
-	for _, element := range pathElements {
-		if strings.Contains(element, "@") || strings.HasPrefix(element, ".") {
-			return ErrIllegalPath
-		}
-		if element != "" {
-			empty = false
-		}
-	}
-	if empty {
-		return ErrIllegalPath
-	} else {
-		return nil
-	}
-}
-
-func fixPath(path string) (fixed string) {
-	if strings.HasPrefix(path, "/") {
-		fixed = "/"
-	}
-	pathElements := strings.Split(filepath.Clean(path), string(filepath.Separator))
-	for _, element := range pathElements {
-		fixed = filepath.Join(fixed, strings.Replace(strings.TrimPrefix(element, "."), "@", "_", -1))
-	}
-	return
+	return nil
 }
 
 // GetGeneration increments current generation if the argument is true and returns it.
@@ -228,22 +117,76 @@ func (S *Store) GetGeneration(increment bool) uint64 {
 	}
 }
 
-// FileHistory returns generations available for the given path.
-func (S *Store) FileHistory(path string) (history []uint64, err error) {
-	dir, err := os.ReadDir(filepath.Dir(S.realPath(path, true)))
+// New opens or creates a new store.
+func New(root string) (S Store, err error) {
+	S = Store{Directory: root, Generation: 1}
+	if err = os.MkdirAll(root, 0755); err != nil {
+		return
+	}
+	if err = os.MkdirAll(root+"/.history", 0755); err != nil {
+		return
+	}
+	if err = S.normalize(); err != nil {
+		return
+	}
+	err = S.initGeneration()
+	return
+}
+
+// filePath returns the filesystem path to the file with the given name.
+// If `history` is true, then the path will point to the file in the
+// history directory, but a generation number needs to be appended to it
+// for it to be useful. The file name is normalized.
+func (S *Store) filePath(name string, history bool) string {
+	if history {
+		return filepath.Join(S.Directory, ".history", normalizeName(name))
+	} else {
+		return filepath.Join(S.Directory, normalizeName(name))
+	}
+}
+
+// History returns generations available for the given file.
+// The name is normalized
+func (S *Store) History(file string) (generations []uint64, err error) {
+	file = normalizeName(file)
+	dir, err := os.ReadDir(filepath.Join(S.Directory, ".history"))
 	if err != nil {
 		return
 	}
 	for _, entry := range dir {
-		if n := entry.Name(); strings.HasPrefix(n, filepath.Base(path)+"@") {
-			if g := getGenerationFromFileName(n); g != 0 {
-				history = append(history, g)
+		if n := entry.Name(); strings.HasPrefix(n, filepath.Base(file)+"@") {
+			if g := generation(n); g != 0 {
+				generations = append(generations, g)
 			}
 		}
 	}
 	// Sort found generations starting from the newest.
-	sort.Slice(history, func(i, j int) bool { return history[i] > history[j] })
+	sort.Slice(generations, func(i, j int) bool { return generations[i] > generations[j] })
 	return
+}
+
+// recordHistory backups a file. If the file doesn't exist or the current
+// version is already saved, it does nothing. The file name is normalized.
+func (S *Store) recordHistory(file string) error {
+	file = normalizeName(file)
+	path := S.filePath(file, false)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil // File doesn't exist.
+	}
+	generations, err := S.History(file)
+	if err != nil {
+		return err
+	}
+	if len(generations) != 0 {
+		latest := S.filePath(file, true) + "@" + strconv.FormatUint(generations[0], 10)
+		if eq, err := compareFiles(path, latest); err != nil {
+			return err
+		} else if eq {
+			return nil // This version is already saved
+		}
+	}
+	// Capturing
+	return copyFile(path, S.filePath(file, true)+"@"+strconv.FormatUint(S.GetGeneration(true), 10), false)
 }
 
 // compareFiles return true if both files are equal.
@@ -292,10 +235,10 @@ func compareFiles(file1, file2 string) (bool, error) {
 	}
 }
 
-// copy is a helper function to copy files. If overwrite flag is set
+// copyFile is a helper function to copy files. If overwrite flag is set
 // to false and the target file exists, the file will not be copied
 // and an error will be returned.
-func copy(from, to string, overwrite bool) error {
+func copyFile(from, to string, overwrite bool) error {
 	f1, err := os.Open(from)
 	if err != nil {
 		return err
@@ -321,122 +264,73 @@ func copy(from, to string, overwrite bool) error {
 	return nil
 }
 
-// captureHistory backups a file. If the file doesn't exist or the current
-// version is already saved, it does nothing.
-func (S *Store) captureHistory(path string) error {
-	if err := checkPath(path); err != nil {
-		return err
-	}
-	currentPath := S.realPath(path, false)
-	if _, err := os.Stat(currentPath); errors.Is(err, os.ErrNotExist) {
-		return nil // File doesn't exist.
-	}
-	history, err := S.FileHistory(path)
-	if err != nil {
-		return err
-	}
-	if len(history) != 0 {
-		latestPath := S.realPath(path, true) + "@" + strconv.FormatUint(history[0], 10)
-		if eq, err := compareFiles(currentPath, latestPath); err != nil {
-			return err
-		} else if eq {
-			return nil // This version is already saved
-		}
-	}
-	// Capturing
-	copy(currentPath, S.realPath(path, true)+"@"+strconv.FormatUint(S.GetGeneration(true), 10), false)
-	return nil
-}
-
-// Write returns a file descriptor for writing.
+// Overwrite returns a file descriptor for writing.
 // If the file exists, it is truncated.
-func (S *Store) Write(path string) (*os.File, error) {
-	if err := S.captureHistory(path); err != nil {
+func (S *Store) Overwrite(file string) (*os.File, error) {
+	if err := S.recordHistory(file); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(S.realPath(path, false)), 0755); err != nil {
-		return nil, err
-	}
-	return os.OpenFile(S.realPath(path, false), os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	return os.OpenFile(S.filePath(file, false), os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
 }
 
 // Open opens given file for reading. If generation is non-zero, it opens a historic version.
-func (S *Store) Open(path string, generation uint64) (*os.File, error) {
+func (S *Store) Open(file string, generation uint64) (*os.File, error) {
 	if generation == 0 {
-		return os.Open(S.realPath(path, false))
+		return os.Open(S.filePath(file, false))
 	} else {
-		return os.Open(S.realPath(path, true) + "@" + strconv.FormatUint(generation, 10))
+		return os.Open(S.filePath(file, true) + "@" + strconv.FormatUint(generation, 10))
 	}
 }
 
 // Copy copies a file.
 func (S *Store) Copy(from, to string) error {
-	if err := S.captureHistory(to); err != nil {
+	if err := S.recordHistory(to); err != nil {
 		return err
 	}
-	return copy(S.realPath(from, false), S.realPath(to, false), true)
+	return copyFile(S.filePath(from, false), S.filePath(to, false), true)
 }
 
 // Move moves a file.
 func (S *Store) Move(from, to string) error {
-	if err := S.captureHistory(to); err != nil {
+	if err := S.recordHistory(to); err != nil {
 		return err
 	}
-	if err := S.captureHistory(from); err != nil {
+	if err := S.recordHistory(from); err != nil {
 		return err
 	}
-	if err := os.Rename(S.realPath(from, false), S.realPath(to, false)); err != nil {
-		return err
-	}
-	return cleanDirectory(filepath.Dir(S.realPath(to, false)))
+	return os.Rename(S.filePath(from, false), S.filePath(to, false))
 }
 
 // Remove removes a file.
-func (S *Store) Remove(path string) error {
-	if err := S.captureHistory(path); err != nil {
+func (S *Store) Remove(file string) error {
+	if err := S.recordHistory(file); err != nil {
 		return err
 	}
-	if err := os.Remove(S.realPath(path, false)); err != nil {
-		return err
-	}
-	return cleanDirectory(filepath.Dir(S.realPath(path, false)))
-}
-
-// List lists files (and not directories) in the specified directory.
-// List returns paths relative to root, not to the path specified as the argument.
-func (S *Store) List(path string, history bool, recursive bool) (listing []string, err error) {
-	entries, err := os.ReadDir(S.realPath(path, history))
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if entry.Name() == ".history" {
-			continue
-		}
-		entryPath := filepath.Join(path, entry.Name())
-		if !entry.IsDir() {
-			listing = append(listing, entryPath)
-		}
-		if recursive && entry.IsDir() {
-			var children []string
-			children, err = S.List(entryPath, history, true)
-			if err != nil {
-				return
-			}
-			listing = append(listing, children...)
-		}
-	}
-	return
+	return os.Remove(S.filePath(file, false))
 }
 
 // Stat runs os.Stat on the specified file.
-func (S *Store) Stat(path string, history bool) (fs.FileInfo, error) {
-	if err := checkPath(path); err != nil {
-		return nil, err
-	}
-	fi, err := os.Stat(S.realPath(path, history))
+func (S *Store) Stat(file string, history bool) (fs.FileInfo, error) {
+	return os.Stat(S.filePath(file, history))
+}
+
+// List lists all files. If history is true, returns all backed up files'
+// names, without the version string.
+func (S *Store) List(history bool) (files []string, err error) {
+	dir, err := os.ReadDir(S.filePath("", history))
 	if err != nil {
 		return nil, err
 	}
-	return fi, nil
+	processed := make(map[string]bool)
+	for _, entry := range dir {
+		if entry.Name() == ".history" {
+			continue
+		}
+		file := baseName(entry.Name())
+		if !processed[file] {
+			files = append(files, file)
+			processed[file] = true
+		}
+	}
+	return
 }

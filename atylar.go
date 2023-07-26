@@ -14,6 +14,7 @@ package atylar
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -47,26 +48,26 @@ func normalizeName(filename string, history bool) (normalized string) {
 func (S *Store) normalize() error {
 	dir, err := os.ReadDir(filepath.Join(S.Directory, ".history"))
 	if err != nil {
-		return err
+		return fmt.Errorf("normalize %s: %w", S.Directory, err)
 	}
 	for _, entry := range dir {
 		norm := normalizeName(entry.Name(), true)
 		if norm != entry.Name() {
 			if err = os.Rename(filepath.Join(S.Directory, ".history", entry.Name()), filepath.Join(S.Directory, ".history", norm)); err != nil {
-				return err
+				return fmt.Errorf("normalize %s: %w", S.Directory, err)
 			}
 		}
 	}
 
 	dir, err = os.ReadDir(S.Directory)
 	if err != nil {
-		return err
+		return fmt.Errorf("normalize %s: %w", S.Directory, err)
 	}
 	for _, entry := range dir {
 		norm := normalizeName(entry.Name(), false)
 		if norm != entry.Name() && entry.Name() != ".history" {
 			if err = os.Rename(filepath.Join(S.Directory, entry.Name()), filepath.Join(S.Directory, norm)); err != nil {
-				return err
+				return fmt.Errorf("normalize %s: %w", S.Directory, err)
 			}
 		}
 	}
@@ -103,7 +104,7 @@ func baseName(filename string) string {
 func (S *Store) initGeneration() error {
 	dir, err := os.ReadDir(S.Directory + "/.history")
 	if err != nil {
-		return err
+		return fmt.Errorf("initGeneration %s: %w", S.Directory, err)
 	}
 	for _, entry := range dir {
 		if g := generation(entry.Name()); g > S.Generation {
@@ -123,19 +124,21 @@ func (S *Store) GetGeneration(increment bool) uint64 {
 }
 
 // New opens or creates a new store.
-func New(root string) (S Store, err error) {
-	S = Store{Directory: root, Generation: 1}
-	if err = os.MkdirAll(root, 0755); err != nil {
-		return
+func New(root string) (Store, error) {
+	S := Store{Directory: root, Generation: 1}
+	if err := os.MkdirAll(root, 0755); err != nil {
+		return S, fmt.Errorf("new: %w", err)
 	}
-	if err = os.MkdirAll(root+"/.history", 0755); err != nil {
-		return
+	if err := os.MkdirAll(root+"/.history", 0755); err != nil {
+		return S, fmt.Errorf("new: %w", err)
 	}
-	if err = S.normalize(); err != nil {
-		return
+	if err := S.normalize(); err != nil {
+		return S, fmt.Errorf("new: %w", err)
 	}
-	err = S.initGeneration()
-	return
+	if err := S.initGeneration(); err != nil {
+		return S, fmt.Errorf("new: %w", err)
+	}
+	return S, nil
 }
 
 // filePath returns the filesystem path to the file with the given name.
@@ -152,11 +155,12 @@ func (S *Store) filePath(name string, history bool) string {
 
 // History returns generations available for the given file.
 // The name is normalized
-func (S *Store) History(file string) (generations []uint64, err error) {
+func (S *Store) History(file string) ([]uint64, error) {
+	generations := []uint64{}
 	file = normalizeName(file, false)
 	dir, err := os.ReadDir(filepath.Join(S.Directory, ".history"))
 	if err != nil {
-		return
+		return generations, fmt.Errorf("history %s: %w", file, err)
 	}
 	for _, entry := range dir {
 		if n := entry.Name(); strings.HasPrefix(n, filepath.Base(file)+"@") {
@@ -167,7 +171,7 @@ func (S *Store) History(file string) (generations []uint64, err error) {
 	}
 	// Sort found generations starting from the newest.
 	sort.Slice(generations, func(i, j int) bool { return generations[i] > generations[j] })
-	return
+	return generations, nil
 }
 
 // recordHistory backups a file. If the file doesn't exist or the current
@@ -180,18 +184,21 @@ func (S *Store) recordHistory(file string) error {
 	}
 	generations, err := S.History(file)
 	if err != nil {
-		return err
+		return fmt.Errorf("recordHistory %s: %w", file, err)
 	}
 	if len(generations) != 0 {
 		latest := S.filePath(file, true) + "@" + strconv.FormatUint(generations[0], 10)
 		if eq, err := compareFiles(path, latest); err != nil {
-			return err
+			return fmt.Errorf("recordHistory %s: %w", file, err)
 		} else if eq {
 			return nil // This version is already saved
 		}
 	}
 	// Capturing
-	return copyFile(path, S.filePath(file, true)+"@"+strconv.FormatUint(S.GetGeneration(true), 10), false)
+	if err := copyFile(path, S.filePath(file, true)+"@"+strconv.FormatUint(S.GetGeneration(true), 10), false); err != nil {
+		return fmt.Errorf("recordHistory %s: %w", file, err)
+	}
+	return nil
 }
 
 // compareFiles return true if both files are equal.
@@ -199,11 +206,11 @@ func (S *Store) recordHistory(file string) error {
 func compareFiles(file1, file2 string) (bool, error) {
 	f1s, err := os.Stat(file1)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("compareFiles %s %s: %w", file1, file2, err)
 	}
 	f2s, err := os.Stat(file2)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("compareFiles %s %s: %w", file1, file2, err)
 	}
 	if f1s.Size() != f2s.Size() {
 		return false, nil
@@ -211,11 +218,11 @@ func compareFiles(file1, file2 string) (bool, error) {
 
 	f1, err := os.Open(file1)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("compareFiles %s %s: %w", file1, file2, err)
 	}
 	f2, err := os.Open(file2)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("compareFiles %s %s: %w", file1, file2, err)
 	}
 
 	for {
@@ -229,9 +236,9 @@ func compareFiles(file1, file2 string) (bool, error) {
 			} else if err1 == io.EOF || err2 == io.EOF {
 				return false, nil
 			} else if err1 != nil {
-				return false, err1
+				return false, fmt.Errorf("compareFiles %s %s: %w", file1, file2, err1)
 			} else {
-				return false, err2
+				return false, fmt.Errorf("compareFiles %s %s: %w", file1, file2, err2)
 			}
 		}
 		if !bytes.Equal(b1, b2) {
@@ -246,11 +253,11 @@ func compareFiles(file1, file2 string) (bool, error) {
 func copyFile(from, to string, overwrite bool) error {
 	f1, err := os.Open(from)
 	if err != nil {
-		return err
+		return fmt.Errorf("copyFile %s %s: %w", from, to, err)
 	}
 	defer f1.Close()
 	if err = os.MkdirAll(filepath.Dir(to), 0755); err != nil {
-		return err
+		return fmt.Errorf("copyFile %s %s: %w", from, to, err)
 	}
 	flags := 0
 	if overwrite {
@@ -260,11 +267,11 @@ func copyFile(from, to string, overwrite bool) error {
 	}
 	f2, err := os.OpenFile(to, flags, 0644)
 	if err != nil {
-		return err
+		return fmt.Errorf("copyFile %s %s: %w", from, to, err)
 	}
 	defer f2.Close()
 	if _, err = io.Copy(f2, f1); err != nil {
-		return err
+		return fmt.Errorf("copyFile %s %s: %w", from, to, err)
 	}
 	return nil
 }
@@ -273,45 +280,69 @@ func copyFile(from, to string, overwrite bool) error {
 // If the file exists, it is truncated.
 func (S *Store) Overwrite(file string) (*os.File, error) {
 	if err := S.recordHistory(file); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("overwrite %s: %w", file, err)
 	}
-	return os.OpenFile(S.filePath(file, false), os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(S.filePath(file, false), os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	if err != nil {
+		return f, fmt.Errorf("overwrite %s: %w", file, err)
+	} else {
+		return f, nil
+	}
 }
 
 // Open opens given file for reading. If generation is non-zero, it opens a historic version.
 func (S *Store) Open(file string, generation uint64) (*os.File, error) {
 	if generation == 0 {
-		return os.Open(S.filePath(file, false))
+		f, err := os.Open(S.filePath(file, false))
+		if err != nil {
+			return f, fmt.Errorf("open %s: %w", file, err)
+		} else {
+			return f, nil
+		}
 	} else {
-		return os.Open(S.filePath(file, true) + "@" + strconv.FormatUint(generation, 10))
+		f, err := os.Open(S.filePath(file, true) + "@" + strconv.FormatUint(generation, 10))
+		if err != nil {
+			return f, fmt.Errorf("open %s: %w", file, err)
+		} else {
+			return f, nil
+		}
 	}
 }
 
 // Copy copies a file.
 func (S *Store) Copy(from, to string) error {
 	if err := S.recordHistory(to); err != nil {
-		return err
+		return fmt.Errorf("copy %s %s: %w", from, to, err)
 	}
-	return copyFile(S.filePath(from, false), S.filePath(to, false), true)
+	if err := copyFile(S.filePath(from, false), S.filePath(to, false), true); err != nil {
+		return fmt.Errorf("copy %s %s: %w", from, to, err)
+	}
+	return nil
 }
 
 // Move moves a file.
 func (S *Store) Move(from, to string) error {
 	if err := S.recordHistory(to); err != nil {
-		return err
+		return fmt.Errorf("move %s %s: %w", from, to, err)
 	}
 	if err := S.recordHistory(from); err != nil {
-		return err
+		return fmt.Errorf("move %s %s: %w", from, to, err)
 	}
-	return os.Rename(S.filePath(from, false), S.filePath(to, false))
+	if err := os.Rename(S.filePath(from, false), S.filePath(to, false)); err != nil {
+		return fmt.Errorf("move %s %s: %w", from, to, err)
+	}
+	return nil
 }
 
 // Remove removes a file.
 func (S *Store) Remove(file string) error {
 	if err := S.recordHistory(file); err != nil {
-		return err
+		return fmt.Errorf("remove %s: %w", file, err)
 	}
-	return os.Remove(S.filePath(file, false))
+	if err := os.Remove(S.filePath(file, false)); err != nil {
+		return fmt.Errorf("remove %s: %w", file, err)
+	}
+	return nil
 }
 
 // Stat runs os.Stat on the specified file.
@@ -321,10 +352,11 @@ func (S *Store) Stat(file string, history bool) (fs.FileInfo, error) {
 
 // List lists all files. If history is true, returns all backed up files'
 // names, without the version string.
-func (S *Store) List(history bool) (files []string, err error) {
+func (S *Store) List(history bool) ([]string, error) {
+	files := []string{}
 	dir, err := os.ReadDir(S.filePath("", history))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list: %w", err)
 	}
 	processed := make(map[string]bool)
 	for _, entry := range dir {
@@ -337,5 +369,5 @@ func (S *Store) List(history bool) (files []string, err error) {
 			processed[file] = true
 		}
 	}
-	return
+	return files, nil
 }

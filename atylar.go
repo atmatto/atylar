@@ -30,11 +30,16 @@ type Store struct {
 }
 
 // normalizeName turns the filename into a normalized file name.
-func normalizeName(filename string) (normalized string) {
+// If `history` is true, the `@` character before the version number is preserved.
+func normalizeName(filename string, history bool) (normalized string) {
 	normalized = strings.Trim(filepath.Clean(filename), "/\\.")
 	normalized = strings.ReplaceAll(normalized, "/", "_")
 	normalized = strings.ReplaceAll(normalized, "\\", "_")
 	normalized = strings.ReplaceAll(normalized, string(filepath.Separator), "_")
+	if history {
+		c := strings.Count(normalized, "@")
+		return strings.Replace(normalized, "@", "_", c-1)
+	}
 	return strings.ReplaceAll(normalized, "@", "_")
 }
 
@@ -45,7 +50,7 @@ func (S *Store) normalize() error {
 		return err
 	}
 	for _, entry := range dir {
-		norm := normalizeName(entry.Name())
+		norm := normalizeName(entry.Name(), true)
 		if norm != entry.Name() {
 			if err = os.Rename(filepath.Join(S.Directory, ".history", entry.Name()), filepath.Join(S.Directory, ".history", norm)); err != nil {
 				return err
@@ -58,7 +63,7 @@ func (S *Store) normalize() error {
 		return err
 	}
 	for _, entry := range dir {
-		norm := normalizeName(entry.Name())
+		norm := normalizeName(entry.Name(), false)
 		if norm != entry.Name() && entry.Name() != ".history" {
 			if err = os.Rename(filepath.Join(S.Directory, entry.Name()), filepath.Join(S.Directory, norm)); err != nil {
 				return err
@@ -139,16 +144,16 @@ func New(root string) (S Store, err error) {
 // for it to be useful. The file name is normalized.
 func (S *Store) filePath(name string, history bool) string {
 	if history {
-		return filepath.Join(S.Directory, ".history", normalizeName(name))
+		return filepath.Join(S.Directory, ".history", normalizeName(name, true))
 	} else {
-		return filepath.Join(S.Directory, normalizeName(name))
+		return filepath.Join(S.Directory, normalizeName(name, false))
 	}
 }
 
 // History returns generations available for the given file.
 // The name is normalized
 func (S *Store) History(file string) (generations []uint64, err error) {
-	file = normalizeName(file)
+	file = normalizeName(file, false)
 	dir, err := os.ReadDir(filepath.Join(S.Directory, ".history"))
 	if err != nil {
 		return
@@ -168,7 +173,7 @@ func (S *Store) History(file string) (generations []uint64, err error) {
 // recordHistory backups a file. If the file doesn't exist or the current
 // version is already saved, it does nothing. The file name is normalized.
 func (S *Store) recordHistory(file string) error {
-	file = normalizeName(file)
+	file = normalizeName(file, false)
 	path := S.filePath(file, false)
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return nil // File doesn't exist.

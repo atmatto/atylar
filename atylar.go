@@ -46,6 +46,8 @@ func normalizeName(filename string, history bool) (normalized string) {
 
 // normalize ensures that all file names are normalized.
 func (S *Store) normalize() error {
+	// TODO: Handle superfluous directories
+
 	dir, err := os.ReadDir(filepath.Join(S.Directory, ".history"))
 	if err != nil {
 		return fmt.Errorf("normalize %s: %w", S.Directory, err)
@@ -125,7 +127,7 @@ func (S *Store) GetGeneration(increment bool) uint64 {
 
 // New opens or creates a new store.
 func New(root string) (Store, error) {
-	S := Store{Directory: root, Generation: 1}
+	S := Store{Directory: root, Generation: 0}
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return S, fmt.Errorf("new: %w", err)
 	}
@@ -147,7 +149,7 @@ func New(root string) (Store, error) {
 // for it to be useful. The file name is normalized.
 func (S *Store) filePath(name string, history bool) string {
 	if history {
-		return filepath.Join(S.Directory, ".history", normalizeName(name, true))
+		return filepath.Join(S.Directory, ".history", normalizeName(name, false))
 	} else {
 		return filepath.Join(S.Directory, normalizeName(name, false))
 	}
